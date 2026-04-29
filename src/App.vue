@@ -311,7 +311,7 @@ watch(selectedExamIndex, () => {
 
 onMounted(async () => {
   loadState()
-  const res = await fetch('/practice-exams.json')
+  const res = await fetch(`${import.meta.env.BASE_URL}practice-exams.json`)
   exams.value = await res.json()
 
   if (selectedExamIndex.value > exams.value.length - 1) {
