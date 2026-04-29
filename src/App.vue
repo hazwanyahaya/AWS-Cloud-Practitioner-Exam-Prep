@@ -1,0 +1,326 @@
+<template>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <center>      
+        <h3>AWS Cloud Practitioner</h3>
+        <p>Project CloudIgnite C2</p>
+        </center>
+      </div>
+
+      <div class="panel">
+        <label for="exam-select">Select Exam</label>
+        <select id="exam-select" v-model="selectedExamIndex">
+          <option v-for="(exam, idx) in exams" :key="exam.source_file" :value="idx">
+            {{ exam.title }}
+          </option>
+        </select>
+      </div>
+
+      <div class="panel stats" v-if="currentExam">
+        <div class="stat-item">
+          <span>Answered</span>
+          <strong>{{ answeredCount }}/{{ currentExam.questions.length }}</strong>
+        </div>
+        <div class="stat-item">
+          <span>Correct</span>
+          <strong>{{ correctCount }}</strong>
+        </div>
+        <div class="stat-item">
+          <span>Incorrect</span>
+          <strong>{{ incorrectCount }}</strong>
+        </div>
+        <div class="stat-item">
+          <span>Score</span>
+          <strong>{{ scorePercent }}%</strong>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill" :style="{ width: `${progressPercent}%` }"></div>
+        </div>
+      </div>
+
+      <div class="panel actions">
+        <button class="secondary" @click="jumpToUnanswered">Next Unanswered</button>
+        <button class="danger" @click="resetCurrentExam">Reset Exam</button>
+      </div>
+
+      <p class="sidebar-footer">AWS re/Start with Forward College</p>
+    </aside>
+
+    <main class="content" v-if="currentExam && currentQuestion">
+      <header class="content-header">
+        <div>
+          <h2>{{ currentExam.title }}</h2>
+          <p>Question {{ currentQuestion.number }} of {{ currentExam.questions.length }}</p>
+        </div>
+        <div class="header-actions">
+          <button class="chip" @click="prevQuestion" :disabled="currentQuestionIdx === 0">Prev</button>
+          <button class="chip" @click="nextQuestion" :disabled="currentQuestionIdx === currentExam.questions.length - 1">Next</button>
+        </div>
+      </header>
+
+      <section class="question-card">
+        <p class="question-text">{{ currentQuestion.question }}</p>
+
+        <div class="options">
+          <button
+            v-for="option in currentQuestion.options"
+            :key="option.key"
+            class="option-btn"
+            :class="optionClass(option.key)"
+            :disabled="isCurrentSubmitted"
+            @click="toggleAnswer(option.key)"
+          >
+            <span class="option-key">{{ option.key }}</span>
+            <span>{{ option.text }}</span>
+          </button>
+        </div>
+
+        <div class="qa-footer">
+          <button class="secondary" @click="submitCurrentQuestion" :disabled="isCurrentSubmitted || !hasCurrentAnswer">
+            {{ isCurrentSubmitted ? 'Submitted' : 'Submit' }}
+          </button>
+          <p class="answer" v-if="isCurrentSubmitted">Correct answer: {{ currentQuestion.answer.join(', ') }}</p>
+        </div>
+      </section>
+
+      <section class="navigator">
+        <button
+          v-for="(question, idx) in currentExam.questions"
+          :key="question.number"
+          class="nav-item"
+          :class="navClass(idx, question.number)"
+          @click="currentQuestionIdx = idx"
+        >
+          <span v-if="isQuestionSubmitted(question.number)">{{ isQuestionCorrect(question.number) ? '✓' : '✕' }}</span>
+          <span v-else>{{ question.number }}</span>
+        </button>
+      </section>
+    </main>
+
+    <main class="content" v-else>
+      <p>Loading exams...</p>
+    </main>
+  </div>
+</template>
+
+<script setup>
+import { computed, onMounted, ref, watch } from 'vue'
+
+const COOKIE_KEY = 'aws_mcq_dashboard_state'
+
+const exams = ref([])
+const selectedExamIndex = ref(0)
+const currentQuestionIdx = ref(0)
+const answersByExam = ref({})
+const submittedByExam = ref({})
+
+const currentExam = computed(() => exams.value[selectedExamIndex.value])
+const currentQuestion = computed(() => currentExam.value?.questions[currentQuestionIdx.value])
+
+const currentExamKey = computed(() => currentExam.value?.source_file || '')
+const selectedAnswers = computed(() => {
+  if (!currentExamKey.value) return {}
+  return answersByExam.value[currentExamKey.value] || {}
+})
+const submittedMap = computed(() => {
+  if (!currentExamKey.value) return {}
+  return submittedByExam.value[currentExamKey.value] || {}
+})
+const isCurrentSubmitted = computed(() => Boolean(submittedMap.value[currentQuestion.value?.number]))
+const hasCurrentAnswer = computed(() => {
+  if (!currentQuestion.value) return false
+  return (selectedAnswers.value[currentQuestion.value.number] || []).length > 0
+})
+
+const answeredCount = computed(() => {
+  return Object.values(selectedAnswers.value).filter((v) => Array.isArray(v) && v.length > 0).length
+})
+
+const correctCount = computed(() => {
+  if (!currentExam.value) return 0
+  let correct = 0
+  for (const q of currentExam.value.questions) {
+    const picked = selectedAnswers.value[q.number] || []
+    const sortedPicked = [...picked].sort().join(',')
+    const sortedAnswer = [...q.answer].sort().join(',')
+    if (sortedPicked && sortedPicked === sortedAnswer) correct += 1
+  }
+  return correct
+})
+const incorrectCount = computed(() => {
+  if (!currentExam.value) return 0
+  let incorrect = 0
+  for (const q of currentExam.value.questions) {
+    if (!isQuestionSubmitted(q.number)) continue
+    if (!isQuestionCorrect(q.number)) incorrect += 1
+  }
+  return incorrect
+})
+
+const scorePercent = computed(() => {
+  if (!currentExam.value) return 0
+  return Math.round((correctCount.value / currentExam.value.questions.length) * 100)
+})
+
+const progressPercent = computed(() => {
+  if (!currentExam.value) return 0
+  return Math.round((answeredCount.value / currentExam.value.questions.length) * 100)
+})
+
+function getCookie(name) {
+  const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const matches = document.cookie.match(new RegExp(`(?:^|; )${escapeRegExp(name)}=([^;]*)`))
+  return matches ? decodeURIComponent(matches[1]) : null
+}
+
+function setCookie(name, value, days = 365) {
+  const expires = new Date(Date.now() + days * 864e5).toUTCString()
+  document.cookie = `${name}=${encodeURIComponent(value)}; expires=${expires}; path=/; SameSite=Lax`
+}
+
+function saveState() {
+  const payload = {
+    selectedExamIndex: selectedExamIndex.value,
+    currentQuestionIdx: currentQuestionIdx.value,
+    answersByExam: answersByExam.value,
+    submittedByExam: submittedByExam.value,
+  }
+  setCookie(COOKIE_KEY, JSON.stringify(payload))
+}
+
+function loadState() {
+  const raw = getCookie(COOKIE_KEY)
+  if (!raw) return
+  try {
+    const parsed = JSON.parse(raw)
+    selectedExamIndex.value = parsed.selectedExamIndex || 0
+    currentQuestionIdx.value = parsed.currentQuestionIdx || 0
+    answersByExam.value = parsed.answersByExam || {}
+    submittedByExam.value = parsed.submittedByExam || {}
+  } catch {
+    // Ignore malformed cookie
+  }
+}
+
+function toggleAnswer(key) {
+  if (isCurrentSubmitted.value) return
+  const qNum = currentQuestion.value.number
+  const map = { ...selectedAnswers.value }
+  const existing = map[qNum] || []
+
+  if (currentQuestion.value.answer.length > 1) {
+    map[qNum] = existing.includes(key)
+      ? existing.filter((k) => k !== key)
+      : [...existing, key].sort()
+  } else {
+    map[qNum] = [key]
+  }
+
+  answersByExam.value = {
+    ...answersByExam.value,
+    [currentExamKey.value]: map,
+  }
+}
+
+function optionClass(key) {
+  const picked = selectedAnswers.value[currentQuestion.value.number] || []
+  const isSelected = picked.includes(key)
+  const isCorrect = currentQuestion.value.answer.includes(key)
+
+  return {
+    selected: isSelected,
+    correct: isCurrentSubmitted.value && isCorrect,
+    wrong: isCurrentSubmitted.value && isSelected && !isCorrect,
+  }
+}
+
+function navClass(idx, qNum) {
+  const answered = (selectedAnswers.value[qNum] || []).length > 0
+  const submitted = isQuestionSubmitted(qNum)
+  return {
+    active: idx === currentQuestionIdx.value,
+    done: answered,
+    right: submitted && isQuestionCorrect(qNum),
+    wrong: submitted && !isQuestionCorrect(qNum),
+  }
+}
+
+function nextQuestion() {
+  if (!currentExam.value) return
+  if (currentQuestionIdx.value < currentExam.value.questions.length - 1) {
+    currentQuestionIdx.value += 1
+  }
+}
+
+function prevQuestion() {
+  if (currentQuestionIdx.value > 0) {
+    currentQuestionIdx.value -= 1
+  }
+}
+
+function jumpToUnanswered() {
+  if (!currentExam.value) return
+  const idx = currentExam.value.questions.findIndex((q) => (selectedAnswers.value[q.number] || []).length === 0)
+  if (idx >= 0) {
+    currentQuestionIdx.value = idx
+  }
+}
+
+function submitCurrentQuestion() {
+  if (!currentQuestion.value || !hasCurrentAnswer.value || isCurrentSubmitted.value) return
+  const qNum = currentQuestion.value.number
+  submittedByExam.value = {
+    ...submittedByExam.value,
+    [currentExamKey.value]: {
+      ...submittedMap.value,
+      [qNum]: true,
+    },
+  }
+}
+
+function isQuestionSubmitted(qNum) {
+  return Boolean(submittedMap.value[qNum])
+}
+
+function isQuestionCorrect(qNum) {
+  const q = currentExam.value?.questions.find((item) => item.number === qNum)
+  if (!q) return false
+  const picked = selectedAnswers.value[qNum] || []
+  return [...picked].sort().join(',') === [...q.answer].sort().join(',')
+}
+
+function resetCurrentExam() {
+  if (!currentExamKey.value) return
+  answersByExam.value = {
+    ...answersByExam.value,
+    [currentExamKey.value]: {},
+  }
+  submittedByExam.value = {
+    ...submittedByExam.value,
+    [currentExamKey.value]: {},
+  }
+  currentQuestionIdx.value = 0
+}
+
+watch([selectedExamIndex, currentQuestionIdx, answersByExam, submittedByExam], saveState, { deep: true })
+
+watch(selectedExamIndex, () => {
+  currentQuestionIdx.value = 0
+})
+
+onMounted(async () => {
+  loadState()
+  const res = await fetch('/practice-exams.json')
+  exams.value = await res.json()
+
+  if (selectedExamIndex.value > exams.value.length - 1) {
+    selectedExamIndex.value = 0
+  }
+
+  const maxIdx = (currentExam.value?.questions.length || 1) - 1
+  if (currentQuestionIdx.value > maxIdx) {
+    currentQuestionIdx.value = 0
+  }
+})
+</script>
